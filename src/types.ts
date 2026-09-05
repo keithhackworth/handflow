@@ -46,3 +46,7 @@ export interface RawHandDetection {
     handedness?: HandSide;
     handednessConfidence?: number;
 }
+
+export interface HandFlowInput {
+    hands: RawHandDetection[];
+}
