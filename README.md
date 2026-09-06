@@ -74,6 +74,9 @@ Current configuration options:
 | `handSideEvidenceWindow` | `3` | Number of recent observations used when determining hand identity/handedness confidence. |
 | `framesDelay` | `0` | Number of processed frames to hold before returning output. A delay allows future frames to provide additional evidence for ambiguous observations. |
 | `historySize` | `3` | Number of recent processed frames retained internally for temporal reasoning. |
+| `handednessMatchAmbiguityDistanceInHandLengths` | `.25` | (see handedness note below) Using the hand as a ruler, at what distance do we lose confidence in handedness? |
+
+* Note about handedness: Handedness is tricky when hands get close together or overlap. We try to estimate which hand it is based on velocity and trajectory, but it's not guaranteed to be accurate. As confidence drops, HandFlow becomes less willing to override handedness reported by the landmark detector until enough new evidence is collected.
 
 Configuration can be supplied when creating a `HandFlow` instance:
 
@@ -81,6 +84,7 @@ const handFlow = new HandFlow({
     handSideEvidenceWindow: 5,
     framesDelay: 2,
     historySize: 5,
+    handednessMatchAmbiguityDistanceInHandLengths: .5,
 });
 
 ## Intended uses
