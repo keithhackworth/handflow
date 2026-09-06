@@ -3,7 +3,7 @@ export { HandFlow } from "./HandFlow.js";
 export type {
     Hand,
     HandFlowInput,
-    HandFlowResult,
+    HandFlowFrame,
     HandSide,
     Landmark,
     LandmarkSource,

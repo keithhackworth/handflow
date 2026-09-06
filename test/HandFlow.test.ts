@@ -20,6 +20,7 @@ describe("HandFlow", () => {
                     ],
                 },
             ],
+            timestamp: 100,
         };
 
         const result = flow.process(input);
@@ -40,4 +41,88 @@ describe("HandFlow", () => {
             source: "observed",
         });
     });
+    it("groups hands by detector person ID", () => {
+        const flow = new HandFlow();
+    
+        const input = {
+            timestamp: 200,
+            hands: [
+                {
+                    personId: "person-a",
+                    handedness: "left" as const,
+                    landmarks: [],
+                },
+                {
+                    personId: "person-b",
+                    handedness: "right" as const,
+                    landmarks: [],
+                },
+            ],
+        };
+    
+        const frame = flow.process(input);
+    
+        if (frame) {
+            expect(frame.people).toHaveLength(2);
+            expect(frame.people[0]?.id).toBe("person-a");
+            expect(frame.people[1]?.id).toBe("person-b");
+        }
+    });
+});
+
+it("keeps only the most recent three frame results", () => {
+    const flow = new HandFlow({
+        framesDelay: 2,
+    });
+
+    flow.process({
+        timestamp: 100,
+        hands: [
+            {
+                personId: "frame-1",
+                handedness: "left",
+                landmarks: [],
+            },
+        ],
+    });
+
+    flow.process({
+        timestamp: 133,
+        hands: [
+            {
+                personId: "frame-2",
+                handedness: "left",
+                landmarks: [],
+            },
+        ],
+    });
+
+    flow.process({
+        timestamp: 166,
+        hands: [
+            {
+                personId: "frame-3",
+                handedness: "left",
+                landmarks: [],
+            },
+        ],
+    });
+
+    flow.process({
+        timestamp: 199,
+        hands: [
+            {
+                personId: "frame-4",
+                handedness: "left",
+                landmarks: [],
+            },
+        ],
+    });
+
+    const history = flow.getHistory();
+
+    expect(history).toHaveLength(3);
+    expect(history[0]?.people[0]?.id).toBe("frame-2");
+    expect(history[1]?.people[0]?.id).toBe("frame-3");
+    expect(history[2]?.people[0]?.id).toBe("frame-4");
 });

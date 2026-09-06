@@ -30,9 +30,15 @@ export interface Person {
     rightHand?: Hand;
 }
 
-export interface HandFlowResult {
+export interface HandFlowFrame {
     people: Person[];
+    timestamp: number;
 }
+
+export interface HandFlowOptions {
+    framesDelay?: number;
+}
+
 
 export interface RawLandmark {
     x: number;
@@ -45,8 +51,17 @@ export interface RawHandDetection {
     landmarks: RawLandmark[];
     handedness?: HandSide;
     handednessConfidence?: number;
+    personId?: string;
 }
 
 export interface HandFlowInput {
+    timestamp: number;
     hands: RawHandDetection[];
 }
+
+export interface Velocity3D {
+    x: number;
+    y: number;
+    z: number;
+}
+
