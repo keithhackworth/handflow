@@ -14,6 +14,7 @@ export interface Landmark {
     position: Point3D;
     confidence: number;
     source: LandmarkSource;
+    velocity?: Velocity3D;
 }
 
 export type HandSide = "left" | "right" | "unknown";
@@ -22,6 +23,11 @@ export interface Hand {
     side: HandSide;
     identityConfidence: number;
     landmarks: Landmark[];
+}
+
+export interface PendingHandSide {
+    side: Hand["side"];
+    count: number;
 }
 
 export interface Person {
@@ -33,6 +39,11 @@ export interface Person {
 export interface HandFlowFrame {
     people: Person[];
     timestamp: number;
+}
+
+export interface HandSideObservation {
+    side: Hand["side"];
+    confidence: number;
 }
 
 export interface HandFlowOptions {
@@ -64,4 +75,3 @@ export interface Velocity3D {
     y: number;
     z: number;
 }
-

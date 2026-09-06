@@ -6,16 +6,95 @@ import type {
     Landmark,
     Person,
     Velocity3D,
+    PendingHandSide,
+    HandSideObservation,
 } from "./types.js";
 
+import {
+    type HandFlowConfig,
+    DEFAULT_HAND_FLOW_CONFIG
+} from "./config.js";
 
 export class HandFlow {
-    private framesDelay: number;
-    private frameHistory: HandFlowFrame[] = [];
-    private historySize = 3;
+    private config: HandFlowConfig;
 
-    constructor(options: HandFlowOptions = {}) {
-        this.framesDelay = Math.max(0, options.framesDelay ?? 0);
+    private frameHistory: HandFlowFrame[] = [];
+
+
+    constructor(options: Partial<HandFlowConfig> = {}) {
+        this.config = {
+            ...DEFAULT_HAND_FLOW_CONFIG,
+            ...options,
+        };
+    }
+
+    private handSideEvidence = new Map<string, HandSideObservation[]>();
+
+    private resolveHandSide(
+        handKey: string,
+        detectedSide: Hand["side"],
+        detectedConfidence: number,
+    ): {
+        side: Hand["side"];
+        confidence: number;
+    } {
+        if (detectedSide === "unknown") {
+            return {
+                side: "unknown",
+                confidence: 0,
+            };
+        }
+
+        const evidence = this.handSideEvidence.get(handKey) ?? [];
+
+        evidence.push({
+            side: detectedSide,
+            confidence: detectedConfidence,
+        });
+
+        if (evidence.length > this.config.handSideEvidenceWindow) {
+            evidence.shift();
+        }
+
+        this.handSideEvidence.set(handKey, evidence);
+
+        let leftScore = 0;
+        let rightScore = 0;
+
+        for (const observation of evidence) {
+            if (observation.side === "left") {
+                leftScore += observation.confidence;
+            } else if (observation.side === "right") {
+                rightScore += observation.confidence;
+            }
+        }
+
+        const totalScore = leftScore + rightScore;
+
+        if (totalScore === 0) {
+            return {
+                side: "unknown",
+                confidence: 0,
+            };
+        }
+
+        const voteConfidence = Math.max(leftScore, rightScore) / totalScore;
+
+        const identityConfidence = evidence.length === 1
+            ? voteConfidence / this.config.handSideEvidenceWindow
+            : voteConfidence;
+
+        if (leftScore >= rightScore) {
+            return {
+                side: "left",
+                confidence: identityConfidence,
+            };
+        }
+        
+        return {
+            side: "right",
+            confidence: identityConfidence,
+        };
     }
 
     private calculateVelocity(
@@ -39,15 +118,26 @@ export class HandFlow {
         };
     }
 
+    flush(): HandFlowFrame[] {
+        const remainingFrames = [...this.outputBuffer];
+        this.outputBuffer = [];
+
+        return remainingFrames;
+    }
+
     getHistory(): readonly HandFlowFrame[] {
         return this.frameHistory;
     }
+
+    private outputBuffer: HandFlowFrame[] = [];
 
     process(input: HandFlowInput): HandFlowFrame | undefined {
         const people = new Map<string, Person>();
 
         for (const rawHand of input.hands) {
             const personId = rawHand.personId ?? "unassigned";
+
+            const handKey = `${personId}`;
 
             let person = people.get(personId);
 
@@ -69,9 +159,26 @@ export class HandFlow {
                 source: "observed",
             }));
 
+            const previousFrame = this.frameHistory[this.frameHistory.length - 1];
+
+            const previousPerson = previousFrame?.people.find(
+                (candidate) => candidate.id === personId,
+            );
+
+
+            const detectedSide = rawHand.handedness ?? "unknown";
+            const detectedConfidence =
+                rawHand.handednessConfidence ?? 0;
+            
+            const resolved = this.resolveHandSide(
+                handKey,
+                detectedSide,
+                detectedConfidence,
+            );
+
             const hand: Hand = {
-                side: rawHand.handedness ?? "unknown",
-                identityConfidence: rawHand.handednessConfidence ?? 0,
+                side: resolved.side,
+                identityConfidence: resolved.confidence,
                 landmarks,
             };
 
@@ -87,22 +194,19 @@ export class HandFlow {
             timestamp: input.timestamp,
         };
 
-
         this.frameHistory.push(result);
 
-        if (this.frameHistory.length > this.historySize) {
+        if (this.frameHistory.length > this.config.historySize) {
             this.frameHistory.shift();
         }
 
-        //if (this.frameHistory.length <= this.framesDelay) {
-            //return undefined;
-        //}
-        //
-        //return this.frameHistory[
-            //this.frameHistory.length - this.framesDelay - 1
-        //];
+        this.outputBuffer.push(result);
 
-        return result;
+        if (this.outputBuffer.length <= this.config.framesDelay) {
+            return undefined;
+        }
+
+        return this.outputBuffer.shift();
     }
 }
 

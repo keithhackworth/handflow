@@ -62,6 +62,27 @@ The project currently contains the initial TypeScript package structure and publ
 
 Do not depend on the current API remaining stable.
 
+## Configuration
+
+HandFlow is designed to make temporal behavior tunable rather than burying
+assumptions as hard-coded values.
+
+Current configuration options:
+
+| Option | Default | Description |
+| --- | ---: | --- |
+| `handSideEvidenceWindow` | `3` | Number of recent observations used when determining hand identity/handedness confidence. |
+| `framesDelay` | `0` | Number of processed frames to hold before returning output. A delay allows future frames to provide additional evidence for ambiguous observations. |
+| `historySize` | `3` | Number of recent processed frames retained internally for temporal reasoning. |
+
+Configuration can be supplied when creating a `HandFlow` instance:
+
+const handFlow = new HandFlow({
+    handSideEvidenceWindow: 5,
+    framesDelay: 2,
+    historySize: 5,
+});
+
 ## Intended uses
 
 Potential applications include:
