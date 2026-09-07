@@ -63,6 +63,7 @@ export interface RawHandDetection {
     handedness?: HandSide;
     handednessConfidence?: number;
     personId?: string;
+    thumbSideEvidence?: ThumbSideEvidence;
 }
 
 export interface HandFlowInput {
@@ -74,4 +75,23 @@ export interface Velocity3D {
     x: number;
     y: number;
     z: number;
+}
+
+export interface TrackedHand {
+    id: string;
+    personId: string;
+    lastCentroid: Point3D;
+    lastSeenTimestamp: number;
+    side: Hand["side"];
+    velocity: Velocity3D;
+}
+
+export interface ThumbSideEvidence {
+    side: HandSide;
+    confidence: number;
+}
+
+export interface ThumbSideEvidence {
+    side: HandSide;
+    confidence: number;
 }

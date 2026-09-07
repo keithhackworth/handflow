@@ -8,7 +8,19 @@ import type {
     Velocity3D,
     PendingHandSide,
     HandSideObservation,
+    Point3D,
+    TrackedHand,
+    RawHandDetection,
 } from "./types.js";
+
+import {
+    calculateHandSeparationInHandLengths,
+    calculateDistance,
+    calculateLandmarkCentroid,
+    calculatePointVelocity,
+    predictPoint,
+    estimateHandLength,
+} from "./motion.js";
 
 import {
     type HandFlowConfig,
@@ -29,9 +41,80 @@ export class HandFlow {
     }
 
     private handSideEvidence = new Map<string, HandSideObservation[]>();
+    private trackedHands = new Map<string, TrackedHand>();
+    private nextHandId = 1;
+
+    private trajectorySupportsTrackedHand(
+        trackedHand: TrackedHand,
+        previousState: {
+            centroid: Point3D;
+            timestamp: number;
+            velocity: Velocity3D;
+        },
+        observedCentroid: Point3D,
+        timestamp: number,
+        handLength: number,
+    ): boolean {
+        if (handLength <= 0) {
+            return false;
+        }
+
+        const elapsedMs =
+            timestamp - previousState.timestamp;
+
+        if (elapsedMs <= 0) {
+            return false;
+        }
+
+        const predicted = predictPoint(
+            previousState.centroid,
+            previousState.velocity,
+            elapsedMs,
+        );
+
+        const predictionError =
+            calculateDistance(
+                predicted,
+                observedCentroid,
+            );
+
+        const errorInHandLengths =
+            predictionError / handLength;
+
+        return errorInHandLengths <= 0.5;
+    }
+
+    private thumbEvidenceSupportsTrackedHand(
+        trackedHand: TrackedHand,
+        rawHand: RawHandDetection,
+    ): boolean {
+        const evidence = rawHand.thumbSideEvidence;
+
+        if (!evidence) {
+            return false;
+        }
+
+        if (evidence.side === "unknown") {
+            return false;
+        }
+
+        if (trackedHand.side === "unknown") {
+            return false;
+        }
+
+        return (
+            evidence.side === trackedHand.side &&
+            evidence.confidence >= 0.7
+        );
+    }
+
+    private resetHandSideEvidence(handKey: string): void {
+        this.handSideEvidence.delete(handKey);
+    }
 
     private resolveHandSide(
         handKey: string,
+        previousSide: Hand["side"],
         detectedSide: Hand["side"],
         detectedConfidence: number,
     ): {
@@ -84,38 +167,32 @@ export class HandFlow {
             ? voteConfidence / this.config.handSideEvidenceWindow
             : voteConfidence;
 
-        if (leftScore >= rightScore) {
+        if (leftScore > rightScore) {
             return {
                 side: "left",
                 confidence: identityConfidence,
             };
         }
-        
-        return {
-            side: "right",
-            confidence: identityConfidence,
-        };
-    }
 
-    private calculateVelocity(
-        previous: Landmark,
-        current: Landmark,
-        previousTimestamp: number,
-        currentTimestamp: number,
-    ): Velocity3D {
-        const elapsedMs = currentTimestamp - previousTimestamp;
-
-        if (elapsedMs <= 0) {
-            return { x: 0, y: 0, z: 0 };
+        if (rightScore > leftScore) {
+            return {
+                side: "right",
+                confidence: identityConfidence,
+            };
         }
 
-        const seconds = elapsedMs / 1000;
+        if (previousSide !== "unknown") {
+            return {
+                side: previousSide,
+                confidence: identityConfidence,
+            };
+        }
 
         return {
-            x: (current.position.x - previous.position.x) / seconds,
-            y: (current.position.y - previous.position.y) / seconds,
-            z: (current.position.z - previous.position.z) / seconds,
+            side: "unknown",
+            confidence: identityConfidence,
         };
+
     }
 
     flush(): HandFlowFrame[] {
@@ -133,11 +210,19 @@ export class HandFlow {
 
     process(input: HandFlowInput): HandFlowFrame | undefined {
         const people = new Map<string, Person>();
+        const claimedHandIds = new Set<string>();
+
+        const trackedHandIdsByPerson = new Map<string, string[]>();
+        const rawHandByTrackedHandId = new Map<string, RawHandDetection>();
+        const previousTrackedHandState = new Map<string, {
+            centroid: Point3D;
+            timestamp: number;
+            velocity: Velocity3D;
+        }>();
 
         for (const rawHand of input.hands) {
             const personId = rawHand.personId ?? "unassigned";
 
-            const handKey = `${personId}`;
 
             let person = people.get(personId);
 
@@ -159,22 +244,83 @@ export class HandFlow {
                 source: "observed",
             }));
 
-            const previousFrame = this.frameHistory[this.frameHistory.length - 1];
+            const centroid = calculateLandmarkCentroid(landmarks);
 
-            const previousPerson = previousFrame?.people.find(
-                (candidate) => candidate.id === personId,
-            );
+            let trackedHand: TrackedHand | undefined;
 
+            if (centroid) {
+                trackedHand = this.findTrackedHand(
+                    personId,
+                    centroid,
+                    rawHand,
+                    claimedHandIds,
+                );
+
+                if (!trackedHand) {
+                    trackedHand = this.createTrackedHand(
+                        personId,
+                        centroid,
+                        input.timestamp,
+                    );
+                }
+
+                if (trackedHand) {
+                    rawHandByTrackedHandId.set(
+                        trackedHand.id,
+                        rawHand,
+                    );
+                }
+
+                claimedHandIds.add(trackedHand.id);
+
+                const personTrackedHandIds = trackedHandIdsByPerson.get(personId) ?? [];
+
+                personTrackedHandIds.push(trackedHand.id);
+
+                previousTrackedHandState.set(
+                    trackedHand.id,
+                    {
+                        centroid: trackedHand.lastCentroid,
+                        timestamp: trackedHand.lastSeenTimestamp,
+                        velocity: trackedHand.velocity,
+                    },
+                );
+                trackedHandIdsByPerson.set(
+                    personId,
+                    personTrackedHandIds,
+                );
+
+                const previousCentroid = trackedHand.lastCentroid;
+                const previousTimestamp = trackedHand.lastSeenTimestamp;
+
+                trackedHand.velocity = calculatePointVelocity(
+                    previousCentroid,
+                    centroid,
+                    previousTimestamp,
+                    input.timestamp,
+                );
+
+                trackedHand.lastCentroid = centroid;
+                trackedHand.lastSeenTimestamp = input.timestamp;
+
+            }
+
+            const handKey = trackedHand?.id ?? personId;
 
             const detectedSide = rawHand.handedness ?? "unknown";
             const detectedConfidence =
                 rawHand.handednessConfidence ?? 0;
-            
+
             const resolved = this.resolveHandSide(
                 handKey,
+                trackedHand?.side ?? "unknown",
                 detectedSide,
                 detectedConfidence,
             );
+
+            if (trackedHand) {
+                trackedHand.side = resolved.side;
+            }
 
             const hand: Hand = {
                 side: resolved.side,
@@ -186,6 +332,109 @@ export class HandFlow {
                 person.leftHand = hand;
             } else if (hand.side === "right") {
                 person.rightHand = hand;
+            }
+
+
+
+        }
+
+        for (const [personId, person] of people) {
+            const leftHand = person.leftHand;
+            const rightHand = person.rightHand;
+
+            if (!leftHand || !rightHand) {
+                continue;
+            }
+
+            const separation =
+                calculateHandSeparationInHandLengths(
+                    leftHand.landmarks,
+                    rightHand.landmarks,
+                );
+
+            const handednessIsAmbiguous =
+                separation !== undefined &&
+                separation <=
+                this.config
+                    .handednessMatchAmbiguityDistanceInHandLengths;
+
+            if (handednessIsAmbiguous) {
+                const trackedHandIds =
+                    trackedHandIdsByPerson.get(personId) ?? [];
+
+                let identityIsSupported = true;
+
+                for (const handId of trackedHandIds) {
+                    const trackedHand =
+                        this.trackedHands.get(handId);
+
+                    const previousState =
+                        previousTrackedHandState.get(handId);
+
+                    const rawHand =
+                        rawHandByTrackedHandId.get(handId);
+
+                    if (!trackedHand || !previousState || !rawHand) {
+                        identityIsSupported = false;
+                        break;
+                    }
+
+                    const hand =
+                        trackedHand.side === "left"
+                            ? person.leftHand
+                            : trackedHand.side === "right"
+                                ? person.rightHand
+                                : undefined;
+
+                    if (!hand) {
+                        identityIsSupported = false;
+                        break;
+                    }
+
+                    const centroid =
+                        calculateLandmarkCentroid(
+                            hand.landmarks,
+                        );
+
+                    const handLength =
+                        estimateHandLength(
+                            hand.landmarks,
+                        );
+
+                    if (!centroid || !handLength) {
+                        identityIsSupported = false;
+                        break;
+                    }
+
+                    const thumbSupportsIdentity =
+                        this.thumbEvidenceSupportsTrackedHand(
+                            trackedHand,
+                            rawHand,
+                        );
+
+                    const trajectorySupportsIdentity =
+                        this.trajectorySupportsTrackedHand(
+                            trackedHand,
+                            previousState,
+                            centroid,
+                            input.timestamp,
+                            handLength,
+                        );
+
+                    if (
+                        !thumbSupportsIdentity &&
+                        !trajectorySupportsIdentity
+                    ) {
+                        identityIsSupported = false;
+                        break;
+                    }
+                }
+
+                if (!identityIsSupported) {
+                    for (const handId of trackedHandIds) {
+                        this.resetHandSideEvidence(handId);
+                    }
+                }
             }
         }
 
@@ -208,5 +457,76 @@ export class HandFlow {
 
         return this.outputBuffer.shift();
     }
+
+    private createTrackedHand(
+        personId: string,
+        centroid: Point3D,
+        timestamp: number,
+    ): TrackedHand {
+        const trackedHand: TrackedHand = {
+            id: `hand-${this.nextHandId++}`,
+            personId,
+            lastCentroid: centroid,
+            lastSeenTimestamp: timestamp,
+            velocity: {
+                x: 0,
+                y: 0,
+                z: 0,
+            },
+            side: "unknown",
+        };
+
+        this.trackedHands.set(trackedHand.id, trackedHand);
+
+        return trackedHand;
+    }
+
+
+    private findTrackedHand(
+        personId: string,
+        centroid: Point3D,
+        rawHand: RawHandDetection,
+        claimedHandIds: Set<string>,
+    ): TrackedHand | undefined {
+        let bestMatch: TrackedHand | undefined;
+        let bestScore = Number.POSITIVE_INFINITY;
+
+        for (const trackedHand of this.trackedHands.values()) {
+            if (trackedHand.personId !== personId) {
+                continue;
+            }
+
+            if (claimedHandIds.has(trackedHand.id)) {
+                continue;
+            }
+
+            let score = calculateDistance(
+                trackedHand.lastCentroid,
+                centroid,
+            );
+
+            const detectedSide =
+                rawHand.handedness ?? "unknown";
+
+            const detectedConfidence =
+                rawHand.handednessConfidence ?? 0;
+
+            if (
+                trackedHand.side !== "unknown" &&
+                detectedSide !== "unknown" &&
+                trackedHand.side !== detectedSide
+            ) {
+                score += detectedConfidence * 0.25;
+            }
+
+            if (score < bestScore) {
+                bestScore = score;
+                bestMatch = trackedHand;
+            }
+        }
+
+        return bestMatch;
+    }
+
 }
 
